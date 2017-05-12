@@ -6,7 +6,8 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\ArrayInput;
-use Guzzle\Http\Client;
+use Symfony\Component\HttpFoundation\Response;
+use GuzzleHttp\Client;
 
 /**
  * Fetch latest WSDL from Salesforce and store it locally
@@ -51,20 +52,34 @@ class RefreshWsdlCommand extends ContainerAwareCommand
         $instance = $loginResult->getServerInstance();
 
         $url = sprintf('https://%s.salesforce.com', $instance);
+
         $guzzle = new Client(
-            $url,
-            array(
-                'curl.CURLOPT_SSL_VERIFYHOST' => false,
-                'curl.CURLOPT_SSL_VERIFYPEER' => false,
-            )
+            [
+                'base_uri' => $url,
+            ]
         );
 
-        // type=* for enterprise WSDL
-        $request = $guzzle->get('/soap/wsdl.jsp?type=*');
-        $request->addCookie('sid', $sessionId);
-        $response = $request->send();
+        $domain = sprintf('%s.salesforce.com', $instance);
+        $cookies = new \GuzzleHttp\Cookie\CookieJar(
+            true,
+            [
+                ['Name' => 'sid', 'Value' => $sessionId, 'Domain' => $domain]
+            ]
+        );
+
+        $response = $guzzle->get(
+            '/soap/wsdl.jsp?type=*',
+            [
+                'headers' => ['Accept' => 'application/xml'],
+                'cookies' => $cookies
+            ]
+        );
 
         $wsdl = $response->getBody();
+        if ($response->getStatusCode() !== Response::HTTP_OK || !$this->isValidXml($wsdl)) {
+            return;
+        }
+
         $wsdlFile = $this->getContainer()
             ->getParameter('phpforce.soap_client.wsdl');
 
@@ -82,5 +97,16 @@ class RefreshWsdlCommand extends ContainerAwareCommand
             $command->run($input, $output);
         }
     }
-}
 
+    /**
+     * @param string $xml
+     *
+     * @return bool
+     */
+    private function isValidXml($xml)
+    {
+        $doc = @simplexml_load_string($xml);
+
+        return !!$doc;
+    }
+}
